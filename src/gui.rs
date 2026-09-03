@@ -51,6 +51,7 @@ struct PersistedSettings {
     approved_handoff_id: Option<String>,
     auto_start_bridge: bool,
     minimize_to_tray: bool,
+    close_behavior: CloseBehavior,
 }
 
 impl Default for PersistedSettings {
@@ -67,6 +68,26 @@ impl Default for PersistedSettings {
             approved_handoff_id: None,
             auto_start_bridge: false,
             minimize_to_tray: false,
+            close_behavior: CloseBehavior::Ask,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CloseBehavior {
+    #[default]
+    Ask,
+    MinimizeToTray,
+    Exit,
+}
+
+impl CloseBehavior {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask every time",
+            Self::MinimizeToTray => "Minimize to notification area",
+            Self::Exit => "Exit AEC Bridge",
         }
     }
 }
@@ -82,6 +103,7 @@ enum StartOrigin {
 enum TrayEnableOrigin {
     SavedPreference,
     User,
+    CloseRequest,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +111,56 @@ enum WindowVisibilityAction {
     None,
     HideToTray,
     Restore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseRequestAction {
+    None,
+    Prompt,
+    HideToTray,
+    Exit,
+}
+
+fn close_request_action(
+    close_requested: bool,
+    explicit_quit: bool,
+    behavior: CloseBehavior,
+    tray_available: bool,
+) -> CloseRequestAction {
+    if !close_requested || explicit_quit {
+        return CloseRequestAction::None;
+    }
+
+    match behavior {
+        CloseBehavior::Ask => CloseRequestAction::Prompt,
+        CloseBehavior::MinimizeToTray if tray_available => CloseRequestAction::HideToTray,
+        CloseBehavior::MinimizeToTray => CloseRequestAction::Prompt,
+        CloseBehavior::Exit => CloseRequestAction::Exit,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClosePromptChoice {
+    MinimizeToTray,
+    Exit,
+    Cancel,
+}
+
+fn remembered_close_behavior(
+    current: CloseBehavior,
+    choice: ClosePromptChoice,
+    remember_choice: bool,
+    action_succeeded: bool,
+) -> CloseBehavior {
+    if !remember_choice || !action_succeeded {
+        return current;
+    }
+
+    match choice {
+        ClosePromptChoice::MinimizeToTray => CloseBehavior::MinimizeToTray,
+        ClosePromptChoice::Exit => CloseBehavior::Exit,
+        ClosePromptChoice::Cancel => current,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -350,6 +422,8 @@ struct AecBridgeApp {
     window_hidden_to_tray: bool,
     last_window_minimized: bool,
     quit_requested: bool,
+    close_prompt_open: bool,
+    remember_close_choice: bool,
     #[cfg(target_os = "windows")]
     tray: Option<TrayController>,
     tray_error: Option<String>,
@@ -399,6 +473,8 @@ impl AecBridgeApp {
             window_hidden_to_tray: false,
             last_window_minimized: false,
             quit_requested: false,
+            close_prompt_open: false,
+            remember_close_choice: false,
             #[cfg(target_os = "windows")]
             tray: None,
             tray_error: None,
@@ -467,43 +543,55 @@ impl AecBridgeApp {
     }
 
     #[cfg(target_os = "windows")]
-    fn set_tray_enabled(&mut self, enabled: bool, origin: TrayEnableOrigin) {
+    fn ensure_tray_available(&mut self, origin: TrayEnableOrigin) -> bool {
         self.tray_error = None;
-        if !enabled {
-            if self.window_hidden_to_tray {
-                self.restore_window = true;
-            }
-            self.settings.minimize_to_tray = false;
-            if self.tray.take().is_some() {
-                self.push_log("Notification-area mode disabled.");
-            }
-            return;
-        }
-
         if self.tray.is_some() {
-            self.settings.minimize_to_tray = true;
-            return;
+            return true;
         }
 
         match TrayController::create(&self.status) {
             Ok(tray) => {
                 self.tray = Some(tray);
-                self.settings.minimize_to_tray = true;
-                self.push_log("Notification-area mode enabled.");
+                self.push_log("Notification-area icon enabled.");
+                true
             }
             Err(error) => {
-                let preserve_preference = origin == TrayEnableOrigin::SavedPreference;
-                let fallback = if preserve_preference {
-                    "This session will minimize to the taskbar; the saved preference was kept so the app can try again next launch."
-                } else {
-                    "The window will continue to minimize to the taskbar."
+                let fallback = match origin {
+                    TrayEnableOrigin::SavedPreference => {
+                        "The saved preference was kept so the app can try again next launch."
+                    }
+                    TrayEnableOrigin::User => "The requested setting was not enabled.",
+                    TrayEnableOrigin::CloseRequest => {
+                        "AEC Bridge will remain open so it cannot become inaccessible."
+                    }
                 };
                 let message =
-                    format!("Could not enable notification-area mode: {error:#}. {fallback}");
-                self.settings.minimize_to_tray = preserve_preference;
+                    format!("Could not create the notification-area icon: {error:#}. {fallback}");
                 self.tray_error = Some(message.clone());
                 self.push_log(format!("ERROR: {message}"));
+                false
             }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_tray_enabled(&mut self, enabled: bool, origin: TrayEnableOrigin) {
+        if !enabled {
+            self.tray_error = None;
+            if self.window_hidden_to_tray {
+                self.restore_window = true;
+            }
+            self.settings.minimize_to_tray = false;
+            if self.tray.take().is_some() {
+                self.push_log("Hide-on-minimize behavior disabled.");
+            }
+            return;
+        }
+
+        if self.ensure_tray_available(origin) {
+            self.settings.minimize_to_tray = true;
+        } else {
+            self.settings.minimize_to_tray = origin == TrayEnableOrigin::SavedPreference;
         }
     }
 
@@ -528,6 +616,62 @@ impl AecBridgeApp {
         self.restore_window = false;
     }
 
+    fn request_quit(&mut self, context: &egui::Context, log_message: &str) {
+        if self.quit_requested {
+            return;
+        }
+        self.quit_requested = true;
+        self.restore_window = false;
+        self.close_prompt_open = false;
+        if let Some(bridge) = &self.bridge {
+            bridge.stop();
+        }
+        self.push_log(log_message);
+        context.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn handle_close_request(&mut self, context: &egui::Context) {
+        let close_requested = context.input(|input| input.viewport().close_requested());
+
+        #[cfg(target_os = "windows")]
+        if close_requested
+            && !self.quit_requested
+            && self.settings.close_behavior == CloseBehavior::MinimizeToTray
+            && !self.tray_available()
+        {
+            self.ensure_tray_available(TrayEnableOrigin::CloseRequest);
+        }
+
+        match close_request_action(
+            close_requested,
+            self.quit_requested,
+            self.settings.close_behavior,
+            self.tray_available(),
+        ) {
+            CloseRequestAction::None => {}
+            CloseRequestAction::Prompt => {
+                context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if !self.close_prompt_open {
+                    self.remember_close_choice = false;
+                    self.close_prompt_open = true;
+                    self.restore_main_window(context);
+                }
+            }
+            CloseRequestAction::HideToTray => {
+                context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.close_prompt_open = false;
+                self.remember_close_choice = false;
+                self.hide_window_to_tray(
+                    context,
+                    "Window closed to the notification area; AEC Bridge remains running.",
+                );
+            }
+            CloseRequestAction::Exit => {
+                self.request_quit(context, "Window close requested; exiting AEC Bridge.");
+            }
+        }
+    }
+
     #[cfg(target_os = "windows")]
     fn poll_tray_actions(&mut self, context: &egui::Context) -> bool {
         if self.quit_requested {
@@ -549,13 +693,7 @@ impl AecBridgeApp {
         }
 
         if quit {
-            self.quit_requested = true;
-            self.restore_window = false;
-            if let Some(bridge) = &self.bridge {
-                bridge.stop();
-            }
-            self.push_log("Quit requested from the notification-area menu.");
-            context.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.request_quit(context, "Quit requested from the notification-area menu.");
         }
         quit
     }
@@ -1248,6 +1386,158 @@ impl AecBridgeApp {
         }
     }
 
+    fn render_close_prompt(&mut self, context: &egui::Context, colors: Palette) {
+        if !self.close_prompt_open {
+            return;
+        }
+
+        let response = egui::Modal::new(egui::Id::new("close-choice-prompt"))
+            .backdrop_color(egui::Color32::from_black_alpha(150))
+            .frame(
+                egui::Frame::new()
+                    .fill(colors.surface)
+                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .corner_radius(14)
+                    .inner_margin(egui::Margin::same(22)),
+            )
+            .show(context, |ui| {
+                ui.set_width(440.0);
+                ui.label(
+                    egui::RichText::new("Keep AEC Bridge running?")
+                        .size(20.0)
+                        .strong()
+                        .color(colors.text),
+                );
+                ui.add_space(6.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            "Minimizing keeps AEC Bridge open in the notification area. Any active audio processing continues, and you can reopen the window from the icon near the clock. Exiting stops the bridge.",
+                        )
+                        .color(colors.muted),
+                    )
+                    .wrap(),
+                );
+
+                if let Some(error) = &self.tray_error {
+                    ui.add_space(12.0);
+                    callout(
+                        ui,
+                        colors.danger_soft,
+                        colors.danger,
+                        "Notification area unavailable",
+                        error,
+                    );
+                }
+
+                ui.add_space(16.0);
+                ui.checkbox(
+                    &mut self.remember_close_choice,
+                    "Don't ask me again",
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "You can change the remembered choice later in Windows startup settings.",
+                    )
+                    .small()
+                    .color(colors.muted),
+                );
+                ui.add_space(16.0);
+
+                let mut choice = None;
+                let button_width = ((ui.available_width() - 8.0) / 2.0).max(180.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_sized(
+                            [button_width, 42.0],
+                            egui::Button::new(
+                                egui::RichText::new("Minimize to notification area")
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(colors.accent)
+                            .stroke(egui::Stroke::new(1.0, colors.accent))
+                            .corner_radius(8),
+                        )
+                        .clicked()
+                    {
+                        choice = Some(ClosePromptChoice::MinimizeToTray);
+                    }
+                    if ui
+                        .add_sized(
+                            [button_width, 42.0],
+                            egui::Button::new(
+                                egui::RichText::new("Exit AEC Bridge")
+                                    .strong()
+                                    .color(colors.danger),
+                            )
+                            .fill(colors.danger_soft)
+                            .stroke(egui::Stroke::new(1.0, colors.danger))
+                            .corner_radius(8),
+                        )
+                        .clicked()
+                    {
+                        choice = Some(ClosePromptChoice::Exit);
+                    }
+                });
+                ui.add_space(4.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(ClosePromptChoice::Cancel);
+                    }
+                });
+                choice
+            });
+
+        let choice = response
+            .inner
+            .or_else(|| response.should_close().then_some(ClosePromptChoice::Cancel));
+        match choice {
+            Some(ClosePromptChoice::MinimizeToTray) => {
+                #[cfg(target_os = "windows")]
+                let tray_ready = self.ensure_tray_available(TrayEnableOrigin::CloseRequest);
+                #[cfg(not(target_os = "windows"))]
+                let tray_ready = false;
+
+                if tray_ready {
+                    self.settings.close_behavior = remembered_close_behavior(
+                        self.settings.close_behavior,
+                        ClosePromptChoice::MinimizeToTray,
+                        self.remember_close_choice,
+                        true,
+                    );
+                    self.close_prompt_open = false;
+                    self.remember_close_choice = false;
+                    self.hide_window_to_tray(
+                        context,
+                        "Window closed to the notification area; AEC Bridge remains running.",
+                    );
+                }
+            }
+            Some(ClosePromptChoice::Exit) => {
+                self.settings.close_behavior = remembered_close_behavior(
+                    self.settings.close_behavior,
+                    ClosePromptChoice::Exit,
+                    self.remember_close_choice,
+                    true,
+                );
+                self.remember_close_choice = false;
+                self.request_quit(context, "Exit selected from the close prompt.");
+            }
+            Some(ClosePromptChoice::Cancel) => {
+                self.close_prompt_open = false;
+                self.remember_close_choice = false;
+                if !self.settings.minimize_to_tray
+                    && self.settings.close_behavior != CloseBehavior::MinimizeToTray
+                {
+                    self.tray_error = None;
+                }
+                self.push_log("Window close cancelled.");
+            }
+            None => {}
+        }
+    }
+
     fn render_header(&mut self, ui: &mut egui::Ui, colors: Palette) {
         ui.horizontal(|ui| {
             brand_mark(ui, colors);
@@ -1709,7 +1999,57 @@ impl AecBridgeApp {
             }
             ui.label(
                 egui::RichText::new(
-                    "AEC Bridge stays open in the background; active audio processing continues. Click its icon near the clock to reopen it; Close still quits.",
+                    "AEC Bridge stays open in the background; any active audio processing continues. Click its icon near the clock to reopen it.",
+                )
+                .small()
+                .color(colors.muted),
+            );
+
+            ui.add_space(14.0);
+            field_label(
+                ui,
+                colors,
+                "When closing the window",
+                "Choose whether the title-bar Close button asks, keeps the bridge running, or exits.",
+            );
+            let previous_close_behavior = self.settings.close_behavior;
+            egui::ComboBox::from_id_salt("close-behavior-combo")
+                .width(ui.available_width())
+                .selected_text(self.settings.close_behavior.label())
+                .show_ui(ui, |ui| {
+                    for behavior in [
+                        CloseBehavior::Ask,
+                        CloseBehavior::MinimizeToTray,
+                        CloseBehavior::Exit,
+                    ] {
+                        ui.selectable_value(
+                            &mut self.settings.close_behavior,
+                            behavior,
+                            behavior.label(),
+                        );
+                    }
+                });
+            if self.settings.close_behavior != previous_close_behavior {
+                self.push_log(format!(
+                    "Close-button behavior changed to '{}'.",
+                    self.settings.close_behavior.label()
+                ));
+                #[cfg(target_os = "windows")]
+                if self.settings.close_behavior != CloseBehavior::MinimizeToTray
+                    && !self.settings.minimize_to_tray
+                    && !self.window_hidden_to_tray
+                {
+                    self.tray_error = None;
+                    if self.tray.take().is_some() {
+                        self.push_log(
+                            "Notification-area icon disabled because it is no longer needed.",
+                        );
+                    }
+                }
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Choosing 'Don't ask me again' in the close prompt updates this setting.",
                 )
                 .small()
                 .color(colors.muted),
@@ -1724,10 +2064,17 @@ impl AecBridgeApp {
                     &error,
                 );
                 #[cfg(target_os = "windows")]
-                if self.settings.minimize_to_tray && self.tray.is_none() {
+                if (self.settings.minimize_to_tray
+                    || self.settings.close_behavior == CloseBehavior::MinimizeToTray)
+                    && self.tray.is_none()
+                {
                     ui.add_space(6.0);
                     if ui.small_button("Retry notification-area icon").clicked() {
-                        self.set_tray_enabled(true, TrayEnableOrigin::SavedPreference);
+                        if self.settings.minimize_to_tray {
+                            self.set_tray_enabled(true, TrayEnableOrigin::SavedPreference);
+                        } else {
+                            self.ensure_tray_available(TrayEnableOrigin::User);
+                        }
                     }
                 }
             }
@@ -2182,13 +2529,16 @@ impl eframe::App for AecBridgeApp {
         }
 
         #[cfg(target_os = "windows")]
-        let quitting = self.poll_tray_actions(context);
+        let mut quitting = self.poll_tray_actions(context);
         #[cfg(not(target_os = "windows"))]
-        let quitting = false;
+        let mut quitting = false;
+
+        self.handle_close_request(context);
+        quitting |= self.quit_requested;
 
         let minimized = context.input(|input| input.viewport().minimized == Some(true));
         match window_visibility_action(
-            quitting,
+            quitting || self.close_prompt_open,
             self.restore_window,
             self.settings.minimize_to_tray,
             self.tray_available(),
@@ -2199,7 +2549,7 @@ impl eframe::App for AecBridgeApp {
             WindowVisibilityAction::Restore => self.restore_main_window(context),
             WindowVisibilityAction::HideToTray => self.hide_window_to_tray(
                 context,
-                "Window minimized to the notification area; audio processing continues.",
+                "Window minimized to the notification area; AEC Bridge remains running.",
             ),
             WindowVisibilityAction::None => {}
         }
@@ -2276,6 +2626,8 @@ impl eframe::App for AecBridgeApp {
                 ui.add_space(14.0);
                 self.render_action_bar(ui, colors);
             });
+
+        self.render_close_prompt(ui.ctx(), colors);
 
         if self.settings != previous_settings
             && let Some(storage) = frame.storage_mut()
@@ -2471,6 +2823,7 @@ fn settings_change_requires_flush(
     previous.auto_start_bridge
         || current.auto_start_bridge
         || previous.minimize_to_tray != current.minimize_to_tray
+        || previous.close_behavior != current.close_behavior
         || previous.approved_handoff_id != current.approved_handoff_id
         || previous.handoff_render != current.handoff_render
 }
@@ -2569,12 +2922,27 @@ fn login_retry_delay(attempt: u8) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        EndpointDescriptor, LoginStartupWindowAction, PersistedSettings, SavedEndpoint,
-        StartReadiness, WindowVisibilityAction, endpoint_readiness, login_retry_delay,
-        login_startup_window_action, restore_after_fatal_bridge_error,
+        CloseBehavior, ClosePromptChoice, CloseRequestAction, EndpointDescriptor,
+        LoginStartupWindowAction, PersistedSettings, SavedEndpoint, StartReadiness,
+        WindowVisibilityAction, close_request_action, endpoint_readiness, login_retry_delay,
+        login_startup_window_action, remembered_close_behavior, restore_after_fatal_bridge_error,
         settings_change_requires_flush, window_visibility_action,
     };
     use std::time::Duration;
+
+    struct LegacySettingsStorage;
+
+    impl eframe::Storage for LegacySettingsStorage {
+        fn get_string(&self, _key: &str) -> Option<String> {
+            Some("()".to_owned())
+        }
+
+        fn set_string(&mut self, _key: &str, _value: String) {}
+
+        fn remove_string(&mut self, _key: &str) {}
+
+        fn flush(&mut self) {}
+    }
 
     fn endpoint(id: &str, compatible: bool) -> EndpointDescriptor {
         EndpointDescriptor {
@@ -2651,6 +3019,90 @@ mod tests {
     }
 
     #[test]
+    fn close_behavior_defaults_and_legacy_settings_ask_first() {
+        assert_eq!(
+            PersistedSettings::default().close_behavior,
+            CloseBehavior::Ask
+        );
+
+        let settings: PersistedSettings =
+            eframe::get_value(&LegacySettingsStorage, "legacy-settings").unwrap();
+        assert_eq!(settings.close_behavior, CloseBehavior::Ask);
+    }
+
+    #[test]
+    fn close_request_uses_the_configured_behavior() {
+        assert_eq!(
+            close_request_action(false, false, CloseBehavior::Ask, false),
+            CloseRequestAction::None
+        );
+        assert_eq!(
+            close_request_action(true, false, CloseBehavior::Ask, false),
+            CloseRequestAction::Prompt
+        );
+        assert_eq!(
+            close_request_action(true, false, CloseBehavior::MinimizeToTray, true),
+            CloseRequestAction::HideToTray
+        );
+        assert_eq!(
+            close_request_action(true, false, CloseBehavior::MinimizeToTray, false),
+            CloseRequestAction::Prompt
+        );
+        assert_eq!(
+            close_request_action(true, false, CloseBehavior::Exit, false),
+            CloseRequestAction::Exit
+        );
+    }
+
+    #[test]
+    fn explicit_quit_bypasses_every_close_preference() {
+        for behavior in [
+            CloseBehavior::Ask,
+            CloseBehavior::MinimizeToTray,
+            CloseBehavior::Exit,
+        ] {
+            assert_eq!(
+                close_request_action(true, true, behavior, true),
+                CloseRequestAction::None
+            );
+        }
+    }
+
+    #[test]
+    fn close_prompt_remembers_only_a_completed_checked_action() {
+        assert_eq!(
+            remembered_close_behavior(
+                CloseBehavior::Ask,
+                ClosePromptChoice::MinimizeToTray,
+                true,
+                true,
+            ),
+            CloseBehavior::MinimizeToTray
+        );
+        assert_eq!(
+            remembered_close_behavior(CloseBehavior::Ask, ClosePromptChoice::Exit, true, true,),
+            CloseBehavior::Exit
+        );
+        assert_eq!(
+            remembered_close_behavior(
+                CloseBehavior::Ask,
+                ClosePromptChoice::MinimizeToTray,
+                true,
+                false,
+            ),
+            CloseBehavior::Ask
+        );
+        assert_eq!(
+            remembered_close_behavior(CloseBehavior::Ask, ClosePromptChoice::Exit, false, true,),
+            CloseBehavior::Ask
+        );
+        assert_eq!(
+            remembered_close_behavior(CloseBehavior::Ask, ClosePromptChoice::Cancel, true, true,),
+            CloseBehavior::Ask
+        );
+    }
+
+    #[test]
     fn unattended_route_and_approval_changes_require_immediate_flush() {
         let mut previous = PersistedSettings::default();
         let mut current = previous.clone();
@@ -2668,6 +3120,11 @@ mod tests {
         let previous = PersistedSettings::default();
         let mut current = previous.clone();
         current.minimize_to_tray = true;
+        assert!(settings_change_requires_flush(&previous, &current));
+
+        let previous = PersistedSettings::default();
+        let mut current = previous.clone();
+        current.close_behavior = CloseBehavior::Exit;
         assert!(settings_change_requires_flush(&previous, &current));
     }
 

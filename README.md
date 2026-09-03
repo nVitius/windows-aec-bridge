@@ -90,12 +90,12 @@ When using a recording/virtual-mix reference, include the playback audio you act
 exclude the raw microphone, the virtual-cable return, and any processed microphone return.
 
 The GUI remembers endpoint IDs, last known names, theme, reference mode, delay settings, startup
-choices, and notification-area preference. If an audio-driver update changes an endpoint ID, the
-selection is shown as missing rather than silently substituting another device.
+choices, notification-area preference, and close-button behavior. If an audio-driver update changes
+an endpoint ID, the selection is shown as missing rather than silently substituting another device.
 
 ## Windows startup
 
-The **Windows startup** card provides three independent settings:
+The **Windows startup** card provides four independent settings:
 
 - **Open AEC Bridge when I sign in to Windows** registers the current GUI executable for the current
   Windows account. It does not require administrator privileges and can also be managed in Windows
@@ -103,8 +103,10 @@ The **Windows startup** card provides three independent settings:
   report its registration but cannot guarantee that Windows has not overridden it.
 - **Hide AEC Bridge in the notification area when minimized** makes the title-bar minimize button
   remove the window from the taskbar. Click the AEC Bridge icon near the clock or choose **Open AEC
-  Bridge** from its menu to restore the window. **Quit AEC Bridge** exits normally, and the title-bar
-  Close button continues to quit rather than hide.
+  Bridge** from its menu to restore the window. **Quit AEC Bridge** exits normally.
+- **When closing the window** controls the title-bar Close button. It can ask each time, minimize to
+  the notification area while audio processing continues, or exit AEC Bridge. The first-close prompt
+  can remember either action with **Don't ask me again**; return to this setting to change it later.
 - **Start the bridge when saved audio devices are ready** opts into unattended bridge startup. It
   becomes available only after the route is configured and the selected handoff is explicitly
   approved as a virtual cable.
