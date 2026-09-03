@@ -1,0 +1,42 @@
+[package]
+name = "aec-bridge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "A user-mode acoustic echo cancellation bridge for Windows"
+license = "MIT"
+repository = "https://github.com/nVitius/windows-aec-bridge"
+homepage = "https://github.com/nVitius/windows-aec-bridge"
+keywords = ["audio", "echo-cancellation", "wasapi", "webrtc", "windows"]
+categories = ["multimedia::audio", "os::windows-apis"]
+publish = false
+autobins = false
+default-run = "aec-bridge"
+
+[[bin]]
+name = "aec-bridge"
+path = "src/bin/aec_bridge_gui.rs"
+
+[[bin]]
+name = "aec-bridge-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+cpal = "=0.18.2"
+ctrlc = "3.5"
+eframe = { version = "=0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence"] }
+ringbuf = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+sonora = "=0.2.0"
+wasapi = "=0.24.0"
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = { version = "=0.24.2", default-features = false }
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

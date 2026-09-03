@@ -1,0 +1,14 @@
+/target/
+/dist/
+*.wav
+*.exe
+*.pdb
+*.zip
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

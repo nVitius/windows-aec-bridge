@@ -1,0 +1,19 @@
+# License branches permitted in shipped Windows artifacts. Order is selection priority for OR
+# expressions.
+accepted = [
+  "Apache-2.0",
+  "MIT",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "Zlib",
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
+  "Unicode-3.0",
+]
+
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = false
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+private = { ignore = true }

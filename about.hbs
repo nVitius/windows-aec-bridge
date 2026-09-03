@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AEC Bridge third-party licenses</title>
+<style>
+body { color: #202124; font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 960px; padding: 0 1rem; }
+a { color: #1264a3; }
+pre { background: #f4f5f7; border-radius: 8px; overflow: auto; padding: 1rem; white-space: pre-wrap; }
+.license { border-top: 1px solid #d9dde3; margin-top: 2rem; padding-top: 1rem; }
+@media (prefers-color-scheme: dark) { body { background: #17181a; color: #eceff4; } a { color: #70b7ff; } pre { background: #23262a; } }
+</style>
+</head>
+<body>
+<h1>AEC Bridge third-party licenses</h1>
+<p>This file lists the third-party software included in AEC Bridge and the license terms selected for redistribution.</p>
+<h2>License overview</h2>
+<ul>
+{{#each overview}}
+<li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}
+</ul>
+<h2>License texts</h2>
+{{#each licenses}}
+<section class="license">
+{{#if first_of_kind}}<h3 id="{{id}}">{{name}}</h3>{{/if}}
+<h4>{{name}}</h4>
+<p>Used by:</p>
+<ul>
+{{#each used_by}}
+<li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+</section>
+{{/each}}
+</body>
+</html>

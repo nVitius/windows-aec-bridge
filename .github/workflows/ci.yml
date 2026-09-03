@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Test and package (Windows x64)
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets --locked
+
+      - name: Verify third-party license bundle
+        shell: pwsh
+        run: |
+          ./scripts/generate-third-party-licenses.ps1
+          git diff --exit-code -- THIRD_PARTY_LICENSES.html
+
+      - name: Build release executables
+        run: cargo build --release --locked --bin aec-bridge --bin aec-bridge-cli
+
+      - name: Create portable package
+        shell: pwsh
+        run: ./scripts/package-release.ps1 -SkipBuild
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aec-bridge-windows-x64-${{ github.sha }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

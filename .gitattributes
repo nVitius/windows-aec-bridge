@@ -1,0 +1,18 @@
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+Cargo.lock text eol=lf
+LICENSE text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+*.hbs text eol=lf
+*.html text eol=lf
+
+# Generated license text preserves the upstream files verbatim, including intentional whitespace.
+THIRD_PARTY_LICENSES.html -whitespace
