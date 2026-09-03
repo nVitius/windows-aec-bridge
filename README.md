@@ -7,6 +7,8 @@ AEC Bridge is an experimental Windows user-mode acoustic echo cancellation utili
 raw microphone, obtains a far-end reference from playback loopback or an existing recording
 endpoint, runs WebRTC AEC3, and sends the cleaned microphone to an existing virtual audio cable.
 
+![AEC Bridge configured with a microphone, echo reference, and virtual cable](docs/images/aec-bridge-gui.jpg)
+
 The application does not create or install an audio device. A signed virtual cable driver must
 already be installed.
 
